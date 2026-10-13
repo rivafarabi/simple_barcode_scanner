@@ -13,6 +13,19 @@
          }
          html, body {
          height: 100%; /* IMPORTANT!!! Stretches viewport to 100% */
+         margin: 0;
+         padding: 0;
+         overflow: hidden;
+         background: #000;
+         }
+         /* Make the scanner follow the current window size */
+         #reader {
+         width: 100%;
+         height: 100%;
+         }
+         #reader video {
+         width: 100% !important;
+         max-height: 100vh;
          }
       </style>
     <script src="html5-qrcode.min.js"></script>
@@ -21,16 +34,24 @@
 <!-- Div to show the scanner -->
 <div id="reader" ></div>
 <script>
-  //refer doc here https://github.com/mebjas/html5-qrcode
+ //refer doc here https://github.com/mebjas/html5-qrcode
  const html5QrCode = new Html5Qrcode("reader");
  console.log("Starting SCANNING CODE");
+
+ /* Scan type is passed from the app in the url: ?type=qr | barcode | default */
+ const scanType = new URLSearchParams(window.location.search).get("type") || "barcode";
+
+ let isStopped = false;
+ let isScanning = false;
+
  const qrCodeSuccessCallback = (decodedText, decodedResult) => {
+     isStopped = true;
      html5QrCode.stop();
      /* handle success for web */
      window.parent.postMessage(decodedText, "*");
 
      /* handle success for window */
-     if (window.chrome.webview != "undefined") {
+     if (window.chrome && window.chrome.webview) {
          var param = {
              "methodName": "successCallback",
              "data": decodedText
@@ -39,26 +60,62 @@
      }
 
  };
- const config = {
-     fps: 10,
-     qrbox: {
-         width: 280,
-         height: 120,
-         aspectRatio: 1.7777778
+
+ /* Scan box size is calculated from the current window size, so it fits any window */
+ const buildConfig = () => {
+     const width = window.innerWidth;
+     /* The video is usually 16:9, the scan box can't be bigger than it */
+     const base = Math.max(Math.min(width, window.innerHeight, width * 0.5625), 80);
+
+     let qrbox;
+     if (scanType === "qr") {
+         /* QR code is scanned with a square box */
+         const side = Math.max(Math.floor(base * 0.7), 50);
+         qrbox = { width: side, height: side };
+     } else {
+         qrbox = {
+             width: Math.max(Math.floor(width * 0.8), 50),
+             height: Math.max(Math.floor(base * 0.4), 50)
+         };
      }
+
+     return { fps: 10, qrbox: qrbox };
  };
 
- // If you want to prefer back camera
- html5QrCode.start({
-     facingMode: "environment"
- }, config, qrCodeSuccessCallback);
- //html5QrCode.start({ facingMode: "user" }, config, qrCodeSuccessCallback);
+ const startScanner = () => {
+     if (isStopped || isScanning) return;
+     isScanning = true;
+     // If you want to prefer back camera
+     html5QrCode.start({
+         facingMode: "environment"
+     }, buildConfig(), qrCodeSuccessCallback).catch((e) => {
+         isScanning = false;
+         console.log(e);
+     });
+     //html5QrCode.start({ facingMode: "user" }, config, qrCodeSuccessCallback);
+ };
+
+ startScanner();
+
+ /* Restart the scanner with the new scan box size when the window is resized */
+ let resizeTimer;
+ window.addEventListener("resize", () => {
+     clearTimeout(resizeTimer);
+     resizeTimer = setTimeout(() => {
+         if (isStopped || !isScanning) return;
+         html5QrCode.stop().then(() => {
+             isScanning = false;
+             startScanner();
+         }).catch((e) => console.log(e));
+     }, 300);
+ });
 
  //Window event listener
- if (window.chrome.webview != undefined) {
+ if (window.chrome && window.chrome.webview != undefined) {
      window.chrome.webview.addEventListener('message', function(e) {
          let data = JSON.parse(JSON.stringify(e.data));
          if (data.event === "close") {
+             isStopped = true;
              html5QrCode.stop();
          }
 

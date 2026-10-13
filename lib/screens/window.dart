@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -7,7 +8,7 @@ import 'package:simple_barcode_scanner/constant.dart';
 import 'package:simple_barcode_scanner/enum.dart';
 import 'package:webview_windows/webview_windows.dart';
 
-class WindowBarcodeScanner extends StatelessWidget {
+class WindowBarcodeScanner extends StatefulWidget {
   final String lineColor;
   final String cancelButtonText;
   final bool isShowFlashIcon;
@@ -28,13 +29,35 @@ class WindowBarcodeScanner extends StatelessWidget {
   }) : super(key: key);
 
   @override
+  State<WindowBarcodeScanner> createState() => _WindowBarcodeScannerState();
+}
+
+class _WindowBarcodeScannerState extends State<WindowBarcodeScanner> {
+  /// Created once, so rebuilds (e.g. window resize) don't re-initialize the webview
+  /// and don't ask for the camera permission again
+  final WebviewController controller = WebviewController();
+  late final Future<bool> initFuture;
+  StreamSubscription? webMessageSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    initFuture = initPlatformState();
+  }
+
+  @override
+  void dispose() {
+    webMessageSubscription?.cancel();
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    WebviewController controller = WebviewController();
-    bool isPermissionGranted = false;
     return Scaffold(
       appBar: AppBar(
-        title: Text(appBarTitle ?? kScanPageTitle),
-        centerTitle: centerTitle,
+        title: Text(widget.appBarTitle ?? kScanPageTitle),
+        centerTitle: widget.centerTitle,
         leading: IconButton(
           onPressed: () {
             /// send close event to web-view
@@ -45,20 +68,14 @@ class WindowBarcodeScanner extends StatelessWidget {
         ),
       ),
       body: FutureBuilder<bool>(
-          future: initPlatformState(
-            controller: controller,
-          ),
+          future: initFuture,
           builder: (context, snapshot) {
             if (snapshot.hasData && snapshot.data != null) {
-              return Webview(
-                controller,
-                permissionRequested: (url, permissionKind, isUserInitiated) =>
-                    _onPermissionRequested(
-                  url: url,
-                  kind: permissionKind,
-                  isUserInitiated: isUserInitiated,
-                  context: context,
-                  isPermissionGranted: isPermissionGranted,
+              /// The webview fills the available space, and follows the window size
+              return SizedBox.expand(
+                child: Webview(
+                  controller,
+                  permissionRequested: onPermissionRequested,
                 ),
               );
             } else if (snapshot.hasError) {
@@ -73,43 +90,15 @@ class WindowBarcodeScanner extends StatelessWidget {
     );
   }
 
-  Future<WebviewPermissionDecision> _onPermissionRequested(
-      {required String url,
-      required WebviewPermissionKind kind,
-      required bool isUserInitiated,
-      required BuildContext context,
-      required bool isPermissionGranted}) async {
-    final WebviewPermissionDecision? decision;
-    if (!isPermissionGranted) {
-      decision = await showDialog<WebviewPermissionDecision>(
-        context: context,
-        builder: (BuildContext context) => AlertDialog(
-          title: const Text('Permission requested'),
-          content:
-              Text('\'${kind.name}\' permission is require to scan qr/barcode'),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context, WebviewPermissionDecision.deny);
-                isPermissionGranted = false;
-              },
-              child: const Text('Deny'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context, WebviewPermissionDecision.allow);
-                isPermissionGranted = true;
-              },
-              child: const Text('Allow'),
-            ),
-          ],
-        ),
-      );
-    } else {
-      decision = WebviewPermissionDecision.allow;
+  /// The webview only loads the scanner page bundled with this package, which only needs the camera,
+  /// so the camera permission is allowed directly without showing the permission dialog every time
+  Future<WebviewPermissionDecision> onPermissionRequested(
+      String url, WebviewPermissionKind kind, bool isUserInitiated) async {
+    if (kind == WebviewPermissionKind.camera) {
+      return WebviewPermissionDecision.allow;
     }
 
-    return decision ?? WebviewPermissionDecision.none;
+    return WebviewPermissionDecision.deny;
   }
 
   String getAssetFileUrl({required String asset}) {
@@ -118,23 +107,34 @@ class WindowBarcodeScanner extends StatelessWidget {
     return Uri.file(assetsDirectory).toString();
   }
 
-  Future<bool> initPlatformState(
-      {required WebviewController controller}) async {
+  /// Scan type that is read by the scanner page to decide the scan box shape
+  String get scanTypeParam {
+    switch (widget.scanType) {
+      case ScanType.qr:
+        return "qr";
+      case ScanType.barcode:
+        return "barcode";
+      case ScanType.defaultMode:
+        return "default";
+    }
+  }
+
+  Future<bool> initPlatformState() async {
     String? barcodeNumber;
 
     try {
       await controller.initialize();
-      await controller
-          .loadUrl(getAssetFileUrl(asset: PackageConstant.barcodeFilePath));
+      await controller.loadUrl(
+          "${getAssetFileUrl(asset: PackageConstant.barcodeFilePath)}?type=$scanTypeParam");
 
       /// Listen to web to receive barcode
-      controller.webMessage.listen((event) {
+      webMessageSubscription = controller.webMessage.listen((event) {
         if (event['methodName'] == "successCallback") {
           if (event['data'] is String &&
               event['data'].isNotEmpty &&
               barcodeNumber == null) {
             barcodeNumber = event['data'];
-            onScanned(barcodeNumber!);
+            widget.onScanned(barcodeNumber!);
           }
         }
       });
